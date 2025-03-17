@@ -2,10 +2,11 @@ var express = require("express");
 var router = express.Router();
 const { MongoClient, ObjectId } = require("mongodb");
 const { createEmbedings } = require("./embedings");
-const {OpenAI} = require("openai")
+const { OpenAI } = require("openai")
 const fs = require("fs");
 
 var PDFParser = require("pdf2json");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const parser = new PDFParser(this, 1);
 
 /* GET home page. */
@@ -39,7 +40,8 @@ router.post("/load-document", async (req, res) => {
         const embedings = await createEmbedings(line);
         await collection.insertOne({
           text: line,
-          embedding: embedings.data[0].embedding,
+          // embedding: embedings.data[0].embedding,
+          embedding: embedings.embedding.values,
         });
         console.log(line);
       }
@@ -55,6 +57,7 @@ router.post("/load-document", async (req, res) => {
 router.get("/embeddings", async (req, res) => {
   try {
     const embedings = await createEmbedings("Hello World");
+    console.log("🚀 ~ router.get ~ embedings:", embedings)
     res.json(embedings);
   } catch (error) {
     console.log(error);
@@ -100,7 +103,7 @@ router.post("/conversation", async (req, res) => {
 
     // Convert message to vector
     console.log(req.body.message);
-    const messageVector = await createEmbedings(req.body.message);
+    const embedings = await createEmbedings(req.body.message);
 
     const docsCollection = db.collection("docs");
     const vectorSearch = await docsCollection.aggregate([
@@ -108,7 +111,8 @@ router.post("/conversation", async (req, res) => {
         $vectorSearch: {
           index: "default",
           path: "embedding",
-          queryVector: messageVector.data[0].embedding,
+          // queryVector: embedings.data[0].embedding,
+          queryVector: embedings.embedding.values,
           numCandidates: 150,
           limit: 10,
         },
@@ -126,35 +130,54 @@ router.post("/conversation", async (req, res) => {
 
     let finalResult = []
 
-    for await(let doc of vectorSearch){
+    for await (let doc of vectorSearch) {
       finalResult.push(doc)
     }
 
-    const ai = new OpenAI({
-      apiKey : process.env.OPENAIKEY
-    })
+    // const ai = new OpenAI({
+    //   apiKey : process.env.OPENAIKEY
+    // })
 
-    const chat = await ai.chat.completions.create({
-      model : "gpt-4",
-      messages : [
-        {
-          role : "system",
-          content : "You are a humble helper who can answer for questions asked by users from the given context."
-        },
-        {
-          role : "user",
-          content : `${finalResult.map(doc => doc.text + "\n")}
-          \n
-          From the above context, answer the following question: ${message}`
-        }
-      ]
-    })
+    // const chat = await ai.chat.completions.create({
+    //   model : "gpt-4",
+    //   messages : [
+    //     {
+    //       role : "system",
+    //       content : "You are a humble helper who can answer for questions asked by users from the given context."
+    //     },
+    //     {
+    //       role : "user",
+    //       content : `${finalResult.map(doc => doc.text + "\n")}
+    //       \n
+    //       From the above context, answer the following question: ${message}`
+    //     }
+    //   ]
+    // })
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const generativeModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    // const prompt = `Query: ${message}\n\nContext: ${finalResult.map(doc => doc.text + "\n")}\n\nAnswer the query using the provided context.`;
+    const prompt = `Use the following pieces of context to answer the question at the end.
+                    If you don't know the answer, just say that you don't know, don't try to make up an answer.
+                    Use three sentences maximum and keep the answer as concise as possible.
+                    Always say "thanks for asking!" at the end of the answer.
+
+                    ${finalResult.map(doc => doc.text + "\n")}
+
+                    Question: ${message}
+
+                    Helpful Answer:`;
+                    
+    const result = await generativeModel.generateContent(prompt);
+    console.log("🚀 ~ router.post ~ result:", result.response.candidates[0].content.parts[0].text)
+    // return result.response.text();
 
     console.log(`${finalResult.map(doc => doc.text + "\n")}
     \n
     From the above context, answer the following question: ${message}`)
 
-    return res.json(chat.choices[0].message.content);
+    // return res.json(chat.choices[0].message.content);
+    return res.json(result.response.candidates[0].content.parts[0].text);
   } catch (error) {
     res.json({ message: "Something went wrong" });
     console.log(error);
